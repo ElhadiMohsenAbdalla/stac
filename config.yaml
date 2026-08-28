@@ -1,0 +1,94 @@
+# ============================================================
+# Config: satellite datacube pipeline
+# Edit the values in this file before running anything else.
+# Every script reads this file — nothing else needs editing.
+# ============================================================
+
+# All data (inputs, cube, outputs) lives under data_root, NOT in the
+# repo checkout. On caflood, /home has ~64GB free — nowhere near enough
+# for a raster cube. /data has 19TB free, so everything data-sized
+# goes there. Only code/config stay in the repo under /home.
+data_root: "/data/ea667_catchment_project"
+
+catchment:
+  # Path to a vector file (shapefile/GeoJSON/GPKG) with ONE polygon
+  # covering the whole 850 km^2 catchment, relative to data_root.
+  boundary_path: "raw/catchment_boundary.gpkg"
+  # CRS the datacube will be built in. British National Grid is the
+  # natural choice for a UK catchment (avoids UTM zone edge issues,
+  # matches OS/EA data you'll be joining against later).
+  target_crs: "EPSG:27700"
+  # Native analysis resolution in metres (10 m = Sentinel-2 visible/NIR)
+  resolution: 10
+
+date_range:
+  start: "2020-01-01"
+  end: "2025-12-31"
+
+stac:
+  # "planetary_computer" or "copernicus_dataspace"
+  # Planetary Computer: no login needed to search, free SAS-token
+  #   signing for asset access, easiest to get running quickly.
+  # Copernicus Dataspace: official Copernicus catalogue, needs a
+  #   free CDSE account + OAuth token for asset access, sometimes
+  #   has scenes slightly before Planetary Computer's copy does.
+  # Start with planetary_computer; switch later if you need a scene
+  # it doesn't have.
+  provider: "planetary_computer"
+  collection: "sentinel-2-l2a"
+  max_cloud_cover_pct: 40   # STAC-level pre-filter; per-pixel SCL masking happens later
+
+bands:
+  # Sentinel-2 L2A band names as they appear in the STAC item assets.
+  # 10 m native
+  ten_m: ["B02", "B03", "B04", "B08"]
+  # 20 m native (red-edge + SWIR) — will be resampled to 10 m for the
+  # common analysis grid, but keep track of native res for QC.
+  twenty_m: ["B05", "B06", "B07", "B8A", "B11", "B12"]
+  # Scene classification layer, used for cloud/shadow masking
+  scl: "SCL"
+
+# SCL pixel classes to KEEP (everything else is masked to NaN).
+# 4 = vegetation, 5 = bare soil, 6 = water, 7 = unclassified, 11 = snow
+# Excluded: 0 no-data, 1 saturated/defective, 2 dark area, 3 cloud shadow,
+#           8/9 cloud medium/high probability, 10 thin cirrus
+scl_keep_classes: [4, 5, 6, 7, 11]
+
+paths:
+  # All relative to data_root above.
+  stac_items_json: "raw/stac_items.json"
+  cog_cache: "raw/cog_cache"   # persistent local copy of every downloaded band — never re-fetched once cached
+  raw_zarr: "processed/datacube_raw.zarr"
+  indices_zarr: "processed/datacube_indices.zarr"   # now contains raw bands + indices together
+  field_polygons: "raw/catchment_fields.gpkg"   # field_id column required
+  field_id_column: "field_id"
+  zonal_stats_out: "processed/field_timeseries.parquet"
+
+dask:
+  # Tuned for caflood: 16 cores / 124GB RAM, standalone (no scheduler).
+  # 8 workers x 2 threads = 16 threads total (matches core count).
+  # 8 workers x 12GB = 96GB, leaving ~28GB headroom for the OS, GDAL's
+  # own caches, and rasterstats' non-Dask memory use in stage 4.
+  # No need to be as tight as an HPC allocation here — this is a
+  # dedicated box, so err toward using it rather than under-using it.
+  n_workers: 8
+  threads_per_worker: 2
+  memory_limit: "12GB"
+
+download:
+  # COG downloads are I/O-bound (waiting on network), not CPU-bound,
+  # so this is a thread pool independent of the Dask settings above.
+  # Dropped from 16 -> 8: caflood was seeing a noticeable rate of
+  # read-timeouts under 16 concurrent streams (roughly 1% of assets),
+  # suggesting the actual network path (campus egress / a proxy) was
+  # the bottleneck, not the box itself. Each download now also retries
+  # up to 3x with backoff before falling back to uncached streaming,
+  # so a genuinely transient timeout no longer permanently skips
+  # caching that asset. Raise back toward 16 if 8 turns out to have
+  # no timeouts at all and you want more throughput.
+  max_workers: 8
+
+# Process the date range in yearly chunks when writing to Zarr.
+# Keeps peak memory bounded regardless of total time series length —
+# this is the single biggest thing that prevents "exceeded" errors.
+write_chunk: "1YE"

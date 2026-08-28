@@ -1,0 +1,26 @@
+name: catchment-cube
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - xarray
+  - dask
+  - distributed
+  - odc-stac          # loads STAC items straight into a lazy xarray Dataset
+  - pystac-client
+  - planetary-computer # SAS-token signing for Planetary Computer assets
+  - rioxarray
+  - rasterio
+  - geopandas
+  - shapely
+  - zarr
+  - numcodecs
+  - pyproj
+  - rasterstats        # field-level zonal statistics
+  - pyarrow            # parquet I/O
+  - tqdm
+  - pyyaml
+  - requests
+  - pip
+  - pip:
+      - planetary-computer
